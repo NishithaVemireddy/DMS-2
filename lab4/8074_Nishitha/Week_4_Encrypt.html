@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Encryption/Decryption Performance with IndexedDB</title>
+</head>
+<body>
+
+<h2>Encrypt/Decrypt To-Do Items</h2>
+
+<button onclick="generateTasks(1000)">Generate Tasks</button>
+<button onclick="encryptData()">Encrypt</button>
+<button onclick="decryptData()">Decrypt</button>
+<button onclick="updateDashboard()">Update Dashboard</button>
+
+<p><strong>Encryption Time:</strong> <span id="encryptionTime"></span> ms</p>
+<p><strong>Decryption Time:</strong> <span id="decryptionTime"></span> ms</p>
+
+<p><strong>Encrypted Data:</strong> <span id="encryptedData"></span></p>
+<p><strong>Decrypted Data:</strong> <span id="decryptedData"></span></p>
+
+<h2>Task Dashboard</h2>
+<p><strong>Completed Tasks:</strong> <span id="completedTasks"></span></p>
+<p><strong>In Progress Tasks:</strong> <span id="inProgressTasks"></span></p>
+
+<script>
+    let db;
+    const dbName = "TaskDatabase";
+    const dbVersion = 1;
+    let encryptedArray = null;
+    let key = null;
+    let iv = null;
+
+    const request = indexedDB.open(dbName, dbVersion);
+
+    request.onerror = (event) => {
+        console.error("Database error:", event.target.error);
+    };
+
+    request.onupgradeneeded = (event) => {
+        db = event.target.result;
+        if (!db.objectStoreNames.contains('tasks')) {
+            const store = db.createObjectStore('tasks', { keyPath: 'id', autoIncrement: true });
+            store.createIndex('status', 'status');
+            store.createIndex('createdAt', 'createdAt');
+            store.createIndex('priority', 'priority');
+        }
+    };
+
+    request.onsuccess = (event) => {
+        db = event.target.result;
+        console.log("Database initialized");
+    };
+
+    // Function to generate random task titles
+    function generateTaskTitle() {
+        const actions = ['Review', 'Update', 'Create', 'Delete', 'Implement', 'Test', 'Debug', 'Deploy', 'Document', 'Optimize'];
+        const items = ['report', 'database', 'API', 'interface', 'component', 'module', 'function', 'service', 'documentation', 'configuration'];
+        const areas = ['sales', 'marketing', 'finance', 'HR', 'development', 'testing', 'production', 'security', 'design', 'support'];
+        
+        const action = actions[Math.floor(Math.random() * actions.length)];
+        const item = items[Math.floor(Math.random() * items.length)];
+        const area = areas[Math.floor(Math.random() * areas.length)];
+        
+        return `${action} ${item} for ${area}`;
+    }
+
+    // Function to generate and store tasks
+    async function generateTasks(count = 1000) {
+        return new Promise((resolve, reject) => {
+            const transaction = db.transaction(['tasks'], 'readwrite');
+            const store = transaction.objectStore('tasks');
+            
+            // Clear existing data
+            store.clear();
+            
+            let completed = 0;
+            const targetCompleted = Math.floor(count * 0.2); // 20% completed tasks
+            
+            // Generate and store tasks
+            for (let i = 0; i < count; i++) {
+                const task = {
+                    title: generateTaskTitle(),
+                    status: completed < targetCompleted ? 'Completed' : 'In Progress',
+                    createdAt: new Date(Date.now() - Math.random() * 30 * 24 * 60 * 60 * 1000),
+                    priority: Math.floor(Math.random() * 3) + 1
+                };
+                
+                if (task.status === 'Completed') completed++;
+                
+                const request = store.add(task);
+                
+                request.onerror = (event) => {
+                    console.error('Error adding task:', event.target.error);
+                    reject(event.target.error);
+                };
+            }
+            
+            transaction.oncomplete = () => {
+                console.log(`Successfully generated ${count} tasks`);
+                updateDashboard();
+                alert(`Successfully generated ${count} tasks!`);
+                resolve();
+            };
+            
+            transaction.onerror = (event) => {
+                console.error('Transaction error:', event.target.error);
+                reject(event.target.error);
+            };
+        });
+    }
+
+    // Function to get all tasks from IndexedDB
+    async function getAllTasks() {
+        return new Promise((resolve, reject) => {
+            const transaction = db.transaction(['tasks'], 'readonly');
+            const store = transaction.objectStore('tasks');
+            const tasks = [];
+
+            store.openCursor().onsuccess = (event) => {
+                const cursor = event.target.result;
+                if (cursor) {
+                    tasks.push(cursor.value);
+                    cursor.continue();
+                } else {
+                    resolve(tasks);
+                }
+            };
+
+            transaction.onerror = (event) => reject(event.target.error);
+        });
+    }
+
+    // Encrypt the data (tasks from IndexedDB)
+    async function encryptData() {
+        if (!key) await generateKey();
+
+        // Retrieve tasks from IndexedDB
+        const tasks = await getAllTasks();
+        if (tasks.length === 0) {
+            alert('No tasks available to encrypt. Please generate tasks first.');
+            return;
+        }
+
+        const encoder = new TextEncoder();
+        const encodedData = encoder.encode(JSON.stringify(tasks));
+
+        const start = performance.now();  // Start measuring time
+
+        encryptedArray = await crypto.subtle.encrypt(
+            { name: "AES-GCM", iv: iv },
+            key,
+            encodedData
+        );
+
+        const end = performance.now();  // End measuring time
+        document.getElementById('encryptionTime').textContent = (end - start).toFixed(2);
+        document.getElementById('encryptedData').textContent = new Uint8Array(encryptedArray).toString();
+    }
+
+    // Decrypt the data
+    async function decryptData() {
+        if (!encryptedArray) return;
+
+        const start = performance.now();  // Start measuring time
+
+        const decryptedArrayBuffer = await crypto.subtle.decrypt(
+            { name: "AES-GCM", iv: iv },
+            key,
+            encryptedArray
+        );
+
+        const end = performance.now();  // End measuring time
+        document.getElementById('decryptionTime').textContent = (end - start).toFixed(2);
+
+        const decoder = new TextDecoder();
+        const decryptedData = decoder.decode(decryptedArrayBuffer);
+        document.getElementById('decryptedData').textContent = decryptedData;
+    }
+
+    // Function to get task counts from IndexedDB
+    async function getTaskCounts() {
+        return new Promise((resolve, reject) => {
+            const transaction = db.transaction(['tasks'], 'readonly');
+            const store = transaction.objectStore('tasks');
+            const statusCounts = {
+                'Completed': 0,
+                'In Progress': 0
+            };
+
+            store.openCursor().onsuccess = (event) => {
+                const cursor = event.target.result;
+                if (cursor) {
+                    const status = cursor.value.status;
+                    if (status in statusCounts) {
+                        statusCounts[status]++;
+                    }
+                    cursor.continue();
+                } else {
+                    resolve(statusCounts);
+                }
+            };
+
+            transaction.onerror = (event) => reject(event.target.error);
+        });
+    }
+
+    // Update the task counts on the dashboard
+    async function updateDashboard() {
+        const counts = await getTaskCounts();
+        document.getElementById('completedTasks').textContent = counts['Completed'];
+        document.getElementById('inProgressTasks').textContent = counts['In Progress'];
+    }
+
+    // Generate a cryptographic key
+    async function generateKey() {
+        key = await crypto.subtle.generateKey(
+            { name: "AES-GCM", length: 256 },
+            true,
+            ["encrypt", "decrypt"]
+        );
+        iv = crypto.getRandomValues(new Uint8Array(12)); // Initialization vector
+    }
+
+</script>
+
+</body>
+</html>
